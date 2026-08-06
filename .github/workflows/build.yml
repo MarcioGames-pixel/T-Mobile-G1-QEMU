@@ -1,0 +1,119 @@
+name: Build T-Mobile G1 ISO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository with LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xorriso \
+            genisoimage \
+            isolinux \
+            syslinux-utils \
+            e2fsprogs \
+            squashfs-tools
+      - name: Verify files
+        run: |
+          test -d assets
+          test -f src/kernel
+          test -f src/initrd.img
+          test -f src/ramdisk.img
+          test -d src/isolinux
+          echo "Assets:"
+          ls -lah assets
+          echo "Source:"
+          ls -lah src
+      - name: Check SquashFS gzip (zlib)
+        run: |
+          echo "Checking compressors..."
+          mksquashfs -help | grep -A20 "Compressors"
+          if mksquashfs -help | grep -qi gzip; then
+            echo "gzip/zlib support OK"
+          else
+            echo "gzip support missing"
+            exit 1
+          fi
+      - name: Create system.img ext2
+        run: |
+          echo "Creating system.img..."
+          mkdir system-root
+          cp -a assets/. system-root/
+          dd if=/dev/zero of=system.img bs=1M count=512
+          mkfs.ext2 \
+            -F \
+            -L system \
+            system.img
+          mkdir mount-system
+          sudo mount -o loop system.img mount-system
+          sudo cp -a system-root/. mount-system/
+          sync
+          sudo umount mount-system
+          ls -lh system.img
+      - name: Create system.sfs
+        run: |
+          echo "Creating SquashFS with gzip (zlib)..."
+          mkdir squashfs-root
+          cp system.img squashfs-root/
+          mksquashfs \
+            squashfs-root \
+            system.sfs \
+            -comp gzip \
+            -b 131072
+          ls -lh system.sfs
+      - name: Copy system.sfs
+        run: |
+          cp system.sfs src/system.sfs
+          ls -lh src/system.sfs
+      - name: Prepare ISO files
+        run: |
+          mkdir iso
+          cp src/kernel iso/
+          cp src/initrd.img iso/
+          cp src/ramdisk.img iso/
+          cp src/system.sfs iso/
+          mkdir iso/isolinux
+          cp -a src/isolinux/. iso/isolinux/
+          find iso -type f -exec ls -lh {} \;
+      - name: Build ISO
+        run: |
+          xorriso \
+            -as mkisofs \
+            -iso-level 3 \
+            -full-iso9660-filenames \
+            -volid "T_MOBILE_G1" \
+            -eltorito-boot isolinux/isolinux.bin \
+            -eltorito-catalog isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -output T-Mobile-G1.iso \
+            iso
+      - name: Verify ISO
+        run: |
+          ls -lh T-Mobile-G1.iso
+          file T-Mobile-G1.iso
+          sha256sum T-Mobile-G1.iso
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: T-Mobile-G1-ISO
+          path: T-Mobile-G1.iso
+          if-no-files-found: error
