@@ -1,0 +1,128 @@
+name: Build and Run T-Mobile G1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository with LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xorriso \
+            isolinux \
+            syslinux-utils \
+            e2fsprogs \
+            squashfs-tools \
+            qemu-system-x86 \
+            wget
+
+      - name: Create system.img
+        run: |
+          mkdir system-root
+
+          cp -a assets/. system-root/
+
+          dd if=/dev/zero of=system.img bs=1M count=512
+
+          mkfs.ext2 -F system.img
+
+          mkdir mount-system
+
+          sudo mount -o loop system.img mount-system
+
+          sudo cp -a system-root/. mount-system/
+
+          sync
+          sudo umount mount-system
+
+      - name: Create system.sfs
+        run: |
+          mksquashfs \
+            system.img \
+            system.sfs \
+            -comp gzip \
+            -b 131072
+
+      - name: Build ISO
+        run: |
+          mkdir iso
+
+          cp src/kernel iso/
+          cp src/initrd.img iso/
+          cp src/ramdisk.img iso/
+          cp system.sfs iso/
+
+          mkdir iso/isolinux
+          cp -a src/isolinux/. iso/isolinux/
+
+          xorriso \
+            -as mkisofs \
+            -iso-level 3 \
+            -volid "T_MOBILE_G1" \
+            -eltorito-boot isolinux/isolinux.bin \
+            -eltorito-catalog isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -o T-Mobile-G1.iso \
+            iso
+
+      - name: Create SD card
+        run: |
+          truncate -s 128M sdcard.img
+
+      - name: Run QEMU
+        run: |
+          nohup qemu-system-i386 \
+            -M pc \
+            -cpu pentium3 \
+            -m 512M \
+            -smp 1 \
+            -vga std \
+            -usb \
+            -device usb-tablet \
+            -device rtl8139,netdev=n0 \
+            -netdev user,id=n0 \
+            -drive file=sdcard.img,format=raw \
+            -cdrom T-Mobile-G1.iso \
+            -boot d \
+            -vnc :1 \
+            -display none \
+            > qemu.log 2>&1 &
+
+          sleep 20
+
+          cat qemu.log
+
+      - name: Install Bore
+        run: |
+          wget -q https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xf bore-v0.6.0-x86_64-unknown-linux-musl.tar.gz
+          chmod +x bore
+
+      - name: Open VNC
+        run: |
+          nohup ./bore local 5901 --to bore.pub --port 5901 > bore.log 2>&1 &
+
+          sleep 10
+
+          cat bore.log
+
+      - name: Keep alive
+        run: |
+          echo "T-Mobile G1 running"
+          sleep 21420
